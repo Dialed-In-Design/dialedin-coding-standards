@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<ruleset name="DialedIn">
+    <description>Coding standards for Dialed In Design WordPress projects (PHPCS layer).</description>
+
+    <!-- Files to scan when run with no path argument. -->
+    <file>.</file>
+
+    <!-- Common exclusions. -->
+    <exclude-pattern>*/vendor/*</exclude-pattern>
+    <exclude-pattern>*/node_modules/*</exclude-pattern>
+
+    <!-- CLI defaults: colour, progress, sniff codes, parallel. -->
+    <arg name="basepath" value="."/>
+    <arg name="colors"/>
+    <arg name="parallel" value="8"/>
+    <arg name="extensions" value="php"/>
+    <arg value="ps"/>
+
+    <!-- Drives PHPCompatibility's version-range sniffs. -->
+    <config name="testVersion" value="8.2-"/>
+
+    <!--
+        WordPress-Extra = WordPress-Core + WordPress-Extra rules,
+        which intentionally excludes WordPress-Docs (too noisy on legacy code).
+    -->
+    <rule ref="WordPress-Extra"/>
+
+    <!-- Flag PHP syntax/functions unsupported on the target PHP range above. -->
+    <rule ref="PHPCompatibilityWP"/>
+</ruleset>
