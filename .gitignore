@@ -1,3 +1,9 @@
 /vendor/
+/node_modules/
 composer.lock
+package-lock.json
 .DS_Store
+.phpunit.cache/
+.phpstan.cache/
+.psalm-cache/
+psalm.cache
