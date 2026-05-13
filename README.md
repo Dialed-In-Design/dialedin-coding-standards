@@ -62,7 +62,28 @@ npm install --save-dev \
   stylelint@^16
 ```
 
-### 3. Wire each layer's config in the consumer
+### 3. Commit your lockfiles
+
+After `composer install` and `npm install`, **commit `composer.lock` and
+`package-lock.json` to the repo.** Do not put them in `.gitignore`.
+
+Reasons:
+
+- `actions/setup-node@v4` with `cache: npm` (used by the reusable workflow
+  below) reads `package-lock.json` to compute a cache key. If the file is
+  not in the repo, the ESLint and Stylelint CI jobs fail at the setup step
+  with `Dependencies lock file is not found`.
+- Without `composer.lock`, CI resolves PHP dependencies fresh on every run.
+  That is non-reproducible: a CI run today and one tomorrow can pull
+  different transitive versions, so a passing build does not guarantee the
+  next build passes.
+
+WordPress repos sometimes gitignore both files out of habit (carried over
+from "the deployment script runs composer install at deploy time" patterns).
+For projects consuming this standards bundle, treat lockfiles as
+build-critical artifacts.
+
+### 4. Wire each layer's config in the consumer
 
 #### PHPCS
 
@@ -111,6 +132,14 @@ Psalm has no native config-include mechanism. **Copy** this repo's
 `psalm.xml.dist` into the consumer and adjust the `<projectFiles>` directories
 to point at your custom code. Keep the `<plugins>` and `runTaintAnalysis`
 settings as-is.
+
+**Also adjust `<ignoreFiles>` to match your filesystem.** Psalm validates every
+path in the config at parse time, so an `<ignoreFiles>` entry pointing at a
+directory that does not exist where Psalm runs (e.g. `node_modules/` in a CI
+job that only runs `composer install`) will fail the parse before any scan
+happens. If your `<projectFiles>` is already scoped tightly (e.g. `src/`
+only), the ignore entries for `node_modules/` and `vendor/` are redundant and
+can be removed entirely.
 
 Generate baseline:
 

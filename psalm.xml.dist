@@ -1,6 +1,19 @@
 <?xml version="1.0"?>
 <!-- Base Psalm config for Dialed In Design WordPress projects.
-     Consumers: copy this file, adjust the projectFiles directory entries.
+
+     Consumers: copy this file into the project root, then adjust BOTH:
+
+       1. <projectFiles> directory entries to point at your custom code
+          (e.g. wp-content/themes/your-theme, wp-content/plugins/your-plugin).
+
+       2. <ignoreFiles> entries to match paths that actually exist wherever
+          Psalm runs. Psalm validates every path in the config at parse time,
+          so an entry referencing a directory that does not exist (e.g.
+          node_modules/ in a CI job that runs composer install but not
+          npm install) will fail the parse before any scan happens. Either
+          remove such entries or scope projectFiles tightly enough that the
+          ignore is redundant.
+
      Generate baseline: vendor/bin/psalm - -set-baseline=psalm-baseline.xml -->
 <psalm
     errorLevel="4"
