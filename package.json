@@ -7,7 +7,7 @@
   "files": [
     ".eslintrc.json",
     "stylelint.config.js",
-    "phpcs.xml.dist",
+    "DialedIn/",
     "phpstan.neon.dist",
     "psalm.xml.dist",
     "lefthook.yml"
