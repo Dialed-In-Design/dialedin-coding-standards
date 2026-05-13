@@ -1,0 +1,25 @@
+{
+  "name": "@dialed-in-design/coding-standards",
+  "version": "0.2.0",
+  "description": "Centralised coding-standards configs for Dialed In Design WordPress projects.",
+  "license": "MIT",
+  "repository": "github:Dialed-In-Design/dialedin-coding-standards",
+  "files": [
+    ".eslintrc.json",
+    "stylelint.config.js",
+    "phpcs.xml.dist",
+    "phpstan.neon.dist",
+    "psalm.xml.dist",
+    "lefthook.yml"
+  ],
+  "peerDependencies": {
+    "eslint": "^8.57.0 || ^9.0.0",
+    "stylelint": "^16.0.0"
+  },
+  "dependencies": {
+    "@wordpress/eslint-plugin": "^22.0.0",
+    "@wordpress/stylelint-config": "^23.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0"
+  }
+}

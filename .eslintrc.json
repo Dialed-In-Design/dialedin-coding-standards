@@ -1,0 +1,11 @@
+{
+    "root": true,
+    "extends": ["plugin:@wordpress/eslint-plugin/recommended"],
+    "ignorePatterns": [
+        "vendor/**",
+        "node_modules/**",
+        "dist/**",
+        "build/**",
+        "**/*.min.js"
+    ]
+}
