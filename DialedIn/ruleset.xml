@@ -2,19 +2,20 @@
 <ruleset name="DialedIn">
     <description>Coding standards for Dialed In Design WordPress projects (PHPCS layer).</description>
 
-    <!-- Files to scan when run with no path argument. -->
-    <file>.</file>
+    <!--
+        Files, basepath, and CLI flags are intentionally NOT set here.
+        A distributed ruleset shouldn't dictate what its consumers scan
+        or how they're invoked. The consumer's phpcs.xml.dist owns those.
 
-    <!-- Common exclusions. -->
+        Sniff-affecting config (testVersion, extensions, parallel) is set
+        here because the rules behave on these inputs.
+    -->
+    <arg name="extensions" value="php"/>
+    <arg name="parallel" value="8"/>
+
+    <!-- Common exclusions are still relevant to inherit. -->
     <exclude-pattern>*/vendor/*</exclude-pattern>
     <exclude-pattern>*/node_modules/*</exclude-pattern>
-
-    <!-- CLI defaults: colour, progress, sniff codes, parallel. -->
-    <arg name="basepath" value="."/>
-    <arg name="colors"/>
-    <arg name="parallel" value="8"/>
-    <arg name="extensions" value="php"/>
-    <arg value="ps"/>
 
     <!-- Drives PHPCompatibility's version-range sniffs. -->
     <config name="testVersion" value="8.2-"/>
