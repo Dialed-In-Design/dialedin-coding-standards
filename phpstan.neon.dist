@@ -22,11 +22,10 @@ parameters:
 
     excludePaths:
         analyseAndScan:
-            - vendor/ (?)
-            - node_modules/ (?)
-            - dist/ (?)
-            - build/ (?)
-            - '*/tests/*' (?)
+            - vendor (?)
+            - node_modules (?)
+            - dist (?)
+            - build (?)
 
     # PhpDoc types are user-written; don't trust them as facts.
     treatPhpDocTypesAsCertain: false
