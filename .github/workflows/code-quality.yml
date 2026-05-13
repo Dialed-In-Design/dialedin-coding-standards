@@ -1,0 +1,112 @@
+# Reusable code-quality workflow for Dialed In Design WordPress projects.
+#
+# Downstream usage. In the consumer repo's .github/workflows/ci.yml:
+#
+#   name: CI
+#   on: [push, pull_request]
+#   jobs:
+#     code-quality:
+#       uses: Dialed-In-Design/dialedin-coding-standards/.github/workflows/code-quality.yml@v0.2.0
+#       with:
+#         php-version: "8.2"   # optional, defaults to 8.2
+#         node-version: "20"   # optional, defaults to 20
+
+name: Code Quality
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        type: string
+        default: "8.2"
+      node-version:
+        type: string
+        default: "20"
+      run-js-checks:
+        description: "Set to false to skip ESLint + Stylelint jobs."
+        type: boolean
+        default: true
+
+jobs:
+  phpcs:
+    name: PHPCS (WPCS + PHP Compatibility)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          coverage: none
+          tools: composer:v2
+      - uses: ramsey/composer-install@v3
+      - run: vendor/bin/phpcs
+
+  phpstan:
+    name: PHPStan (level 5 + WordPress)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          coverage: none
+          tools: composer:v2
+      - uses: ramsey/composer-install@v3
+      - run: vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+
+  psalm:
+    name: Psalm (taint analysis)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          coverage: none
+          tools: composer:v2
+      - uses: ramsey/composer-install@v3
+      - run: vendor/bin/psalm --no-progress --threads=4
+
+  eslint:
+    name: ESLint
+    if: ${{ inputs.run-js-checks }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npx eslint .
+
+  stylelint:
+    name: Stylelint
+    if: ${{ inputs.run-js-checks }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npx stylelint "**/*.{css,scss}"
+
+  gitleaks:
+    name: Gitleaks (secrets scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION=8.18.4
+          curl -fsSL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Scan history for secrets
+        run: gitleaks detect --source . --redact --no-banner --verbose

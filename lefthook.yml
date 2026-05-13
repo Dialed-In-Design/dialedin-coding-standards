@@ -1,0 +1,44 @@
+# Lefthook config for Dialed In Design WordPress projects.
+#
+# Downstream usage. In the consumer repo, create lefthook.yml:
+#
+#   remotes:
+#     - git_url: https://github.com/Dialed-In-Design/dialedin-coding-standards
+#       ref: v0.2.0
+#       configs:
+#         - lefthook.yml
+#
+# Then run: lefthook install
+#
+# Pre-commit runs file-scoped fast lints on staged changes.
+# Pre-push runs whole-project static analysis (slower but blocks
+# unreviewed pushes). Bypass with --no-verify only when unavoidable;
+# CI runs the same gates as a safety net.
+
+pre-commit:
+  parallel: true
+  commands:
+    phpcs:
+      glob: "*.php"
+      run: vendor/bin/phpcs {staged_files}
+      stage_fixed: true
+    eslint:
+      glob: "*.{js,jsx,ts,tsx}"
+      run: npx eslint {staged_files}
+      stage_fixed: true
+    stylelint:
+      glob: "*.{css,scss}"
+      run: npx stylelint {staged_files}
+      stage_fixed: true
+    gitleaks:
+      run: gitleaks protect --staged --redact --no-banner
+
+pre-push:
+  parallel: false
+  commands:
+    phpstan:
+      run: vendor/bin/phpstan analyse --memory-limit=1G --no-progress
+      fail_text: "PHPStan reported errors. Fix or generate a baseline (vendor/bin/phpstan analyse --generate-baseline) before pushing."
+    psalm:
+      run: vendor/bin/psalm --no-progress --threads=4
+      fail_text: "Psalm reported errors. Fix or update baseline (vendor/bin/psalm --set-baseline=psalm-baseline.xml) before pushing."
