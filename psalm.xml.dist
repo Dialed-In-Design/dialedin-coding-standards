@@ -27,12 +27,6 @@
         <pluginClass class="PsalmWordPress\Plugin"/>
     </plugins>
 
-    <stubs>
-        <!-- Adds @psalm-taint-sink annotations for WordPress APIs that the
-             WP plugin's type stubs do not mark as sinks. -->
-        <file name="psalm-stubs/wp-taint-sinks.php" preloadClasses="true"/>
-    </stubs>
-
     <issueHandlers>
         <PossiblyUnusedMethod>
             <errorLevel type="suppress">
