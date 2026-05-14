@@ -30,9 +30,9 @@ set -euo pipefail
 # (Lefthook remote include, npm package, Composer constraint) are pinned
 # independently. Bump SCRIPT_TARGET_TAG when releasing a new standards version.
 
-readonly SCRIPT_VERSION="0.5.0"
+readonly SCRIPT_VERSION="0.5.1"
 readonly STANDARDS_REPO_URL="https://github.com/Dialed-In-Design/dialedin-coding-standards"
-readonly SCRIPT_TARGET_TAG="v0.5.0"
+readonly SCRIPT_TARGET_TAG="v0.5.1"
 readonly COMPOSER_CONSTRAINT="^0.3"
 readonly MIN_PHP_VERSION="8.2"
 readonly MIN_NODE_VERSION="20"
@@ -378,6 +378,31 @@ require_cmd node "Install Node.js ${MIN_NODE_VERSION}+ LTS (https://nodejs.org)"
 require_cmd npm "Comes with Node.js" || exit 1
 require_cmd jq "Required for JSON merging. brew install jq | apt install jq" || exit 1
 
+# Self-execution protection (added in v0.5.1)
+#
+# The init script is meant for downstream consumer projects, NOT for the
+# standards bundle repository itself. Running it inside the bundle would
+# self-reference dialed-in-design/coding-standards as its own dev dep and
+# pollute its composer.json/package.json. This nearly happened during the
+# v0.5.0 release — catch it here.
+#
+# Detection: check whether composer.json declares this repo's package name.
+if [[ -f composer.json ]]; then
+    self_name=$(jq -r '.name // ""' composer.json 2>/dev/null)
+    if [[ "$self_name" == "dialed-in-design/coding-standards" ]]; then
+        log_error "This appears to be the dialed-in-coding-standards repository itself."
+        log_info ""
+        log_info "The init script is for downstream consumer projects, not for the bundle."
+        log_info "Running it here would self-reference the package as its own dev dep and"
+        log_info "corrupt composer.json/package.json."
+        log_info ""
+        log_info "If you intended to run this inside a downstream WordPress project, cd there"
+        log_info "first and re-run. If you're working on the bundle itself, no init step is"
+        log_info "needed — the bundle's own dependencies live in its committed composer.json."
+        exit 1
+    fi
+fi
+
 # Version checks
 PHP_VERSION=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')
 if [[ $(printf '%s\n%s' "$MIN_PHP_VERSION" "$PHP_VERSION" | sort -V | head -1) != "$MIN_PHP_VERSION" ]]; then
@@ -567,6 +592,8 @@ else
             cat <<'EOF_HEADER'
 includes:
     - vendor/dialed-in-design/coding-standards/phpstan.neon.dist
+    # Uncomment after: vendor/bin/phpstan analyse --generate-baseline
+    # - phpstan-baseline.neon
 
 parameters:
     # ⚠ EDIT REQUIRED before analysis can run.
@@ -606,11 +633,6 @@ EOF_HEADER
         # === DETECTED BUILD ARTIFACTS (recommended to exclude) ===
 EOF_FOOTER
             emit_phpstan_path_block "        " "${DETECTED_BUILD_ARTIFACTS[@]}"
-            cat <<'EOF_END'
-
-    # Uncomment after: vendor/bin/phpstan analyse --generate-baseline
-    # baseline: phpstan-baseline.neon
-EOF_END
         } > phpstan.neon
     fi
     log_ok "Wrote phpstan.neon with detected candidates as comments"
@@ -910,7 +932,7 @@ elif ! check_paths_configured; then
     log_info "  3. Run:"
     log_info "       vendor/bin/phpstan analyse --generate-baseline"
     log_info "       vendor/bin/psalm --set-baseline=psalm-baseline.xml"
-    log_info "       sed -i 's|^    # baseline: phpstan-baseline.neon|    baseline: phpstan-baseline.neon|' phpstan.neon"
+    log_info "       sed -i 's|^    # - phpstan-baseline.neon|    - phpstan-baseline.neon|' phpstan.neon"
     log_info ""
     log_info "Or re-run the init script after editing — it will detect configured"
     log_info "paths and proceed to baseline generation automatically."
@@ -932,11 +954,14 @@ else
             log_ok "PHPStan baseline written: ${BASELINE_COUNT} pre-existing violations captured"
 
             # Uncomment the baseline: line in phpstan.neon so it's actually used.
+            # The line lives under `includes:` (PHPStan 2.x location), not under
+            # `parameters:` (the v1.x location, which 2.x rejects with
+            # "Unexpected item parameters > baseline").
             # Idempotent: only edits if the commented line exists.
-            if [[ -f phpstan.neon ]] && grep -q "^    # baseline: phpstan-baseline.neon" phpstan.neon; then
-                sed -i.tmp 's|^    # baseline: phpstan-baseline.neon|    baseline: phpstan-baseline.neon|' phpstan.neon
+            if [[ -f phpstan.neon ]] && grep -q "^    # - phpstan-baseline.neon" phpstan.neon; then
+                sed -i.tmp 's|^    # - phpstan-baseline.neon|    - phpstan-baseline.neon|' phpstan.neon
                 rm -f phpstan.neon.tmp
-                log_ok "Enabled 'baseline:' line in phpstan.neon"
+                log_ok "Enabled phpstan-baseline.neon in phpstan.neon includes"
             fi
         else
             log_warn "PHPStan baseline file was not created. Check paths in phpstan.neon."
