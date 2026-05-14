@@ -1,0 +1,537 @@
+#!/usr/bin/env bash
+#
+# Dialed In Coding Standards — Project Initializer
+# https://github.com/Dialed-In-Design/dialedin-coding-standards
+#
+# Scaffolds Dialed In coding standards (PHPCS, PHPStan, Psalm, ESLint,
+# Stylelint, Lefthook, Gitleaks) into any WordPress project.
+#
+# Quick start (run from the project root):
+#
+#   curl -fsSL https://raw.githubusercontent.com/Dialed-In-Design/dialedin-coding-standards/main/bin/init | bash
+#
+# Pin to a release tag for reproducibility:
+#
+#   curl -fsSL https://raw.githubusercontent.com/Dialed-In-Design/dialedin-coding-standards/v0.3.0/bin/init | bash
+#
+# Safer: download, inspect, then run:
+#
+#   curl -fsSL -o init https://raw.githubusercontent.com/Dialed-In-Design/dialedin-coding-standards/v0.3.0/bin/init
+#   less init
+#   bash init
+#
+# Idempotent: safe to re-run. JSON files merged; other configs skipped if
+# already present. Existing files are backed up before any change.
+
+set -euo pipefail
+
+# ----- Pinned configuration ------------------------------------------------
+# This script is fetched from a tagged URL, but the assets it references
+# (Lefthook remote include, npm package, Composer constraint) are pinned
+# independently. Bump SCRIPT_TARGET_TAG when releasing a new standards version.
+
+readonly SCRIPT_VERSION="0.3.0"
+readonly STANDARDS_REPO_URL="https://github.com/Dialed-In-Design/dialedin-coding-standards"
+readonly SCRIPT_TARGET_TAG="v0.3.0"
+readonly COMPOSER_CONSTRAINT="^0.3"
+readonly MIN_PHP_VERSION="8.2"
+readonly MIN_NODE_VERSION="20"
+
+# ----- Colors (only if stdout is a terminal) -------------------------------
+
+if [[ -t 1 ]]; then
+    C_RED=$'\033[0;31m'
+    C_GREEN=$'\033[0;32m'
+    C_YELLOW=$'\033[0;33m'
+    C_BLUE=$'\033[0;34m'
+    C_BOLD=$'\033[1m'
+    C_RESET=$'\033[0m'
+else
+    C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_BOLD=""; C_RESET=""
+fi
+
+# ----- Logging -------------------------------------------------------------
+
+log_info()    { echo "${C_BLUE}ℹ${C_RESET}  $*"; }
+log_ok()      { echo "${C_GREEN}✓${C_RESET}  $*"; }
+log_warn()    { echo "${C_YELLOW}⚠${C_RESET}  $*"; }
+log_error()   { echo "${C_RED}✗${C_RESET}  $*" >&2; }
+log_section() { echo; echo "${C_BOLD}── $* ──${C_RESET}"; }
+
+# ----- Banner --------------------------------------------------------------
+
+print_banner() {
+    cat <<EOF
+
+${C_BOLD}Dialed In Coding Standards — Initializer v${SCRIPT_VERSION}${C_RESET}
+${STANDARDS_REPO_URL}
+Pinned to: ${SCRIPT_TARGET_TAG}
+
+EOF
+}
+
+# ----- Helpers -------------------------------------------------------------
+
+confirm() {
+    # When stdin is not a TTY (e.g. piped from curl), default to NO and bail.
+    # This is safer than auto-yes on a destructive prompt.
+    if [[ ! -t 0 ]]; then
+        log_warn "Non-interactive shell detected; cannot prompt for confirmation."
+        log_info "Run the script with a TTY, or commit/stash your changes first."
+        return 1
+    fi
+    local prompt="$1"
+    read -rp "${prompt} [y/N] " response
+    [[ "$response" =~ ^[Yy]$ ]]
+}
+
+backup_if_exists() {
+    local file="$1"
+    if [[ -f "$file" ]]; then
+        local backup="${file}.bak.$(date +%Y%m%d-%H%M%S)"
+        cp "$file" "$backup"
+        log_warn "Backed up existing $(basename "$file") → $(basename "$backup")"
+    fi
+}
+
+require_cmd() {
+    local cmd="$1"
+    local install_hint="${2:-}"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        log_error "Required command not found: $cmd"
+        [[ -n "$install_hint" ]] && log_info "$install_hint"
+        return 1
+    fi
+}
+
+# ----- Argument parsing ----------------------------------------------------
+#
+# When invoked via `curl ... | bash`, passing args needs the -s -- pattern:
+#   curl ... | bash -s -- --dry-run
+
+DRY_RUN=0
+PROJECT_DIR=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=1; shift ;;
+        --version) echo "${SCRIPT_VERSION}"; exit 0 ;;
+        -h|--help)
+            cat <<EOF
+Dialed In Coding Standards — Initializer v${SCRIPT_VERSION}
+
+Usage (run from project root):
+  curl -fsSL ${STANDARDS_REPO_URL}/raw/${SCRIPT_TARGET_TAG}/bin/init | bash
+
+With arguments:
+  curl -fsSL ${STANDARDS_REPO_URL}/raw/${SCRIPT_TARGET_TAG}/bin/init | bash -s -- --dry-run
+
+Or download, inspect, run:
+  curl -fsSL -o init ${STANDARDS_REPO_URL}/raw/${SCRIPT_TARGET_TAG}/bin/init
+  bash init [/path/to/project]
+
+Flags:
+  --dry-run        Show what would happen; write nothing.
+  --version        Print initializer version and exit.
+  -h, --help       Show this help.
+
+Pinned to standards tag: ${SCRIPT_TARGET_TAG}
+EOF
+            exit 0
+            ;;
+        *) PROJECT_DIR="$1"; shift ;;
+    esac
+done
+
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+
+# ----- Main ----------------------------------------------------------------
+
+print_banner
+
+log_section "Validating environment"
+
+[[ $DRY_RUN -eq 1 ]] && log_warn "DRY RUN — no changes will be written"
+
+# Project directory
+if [[ ! -d "$PROJECT_DIR" ]]; then
+    log_error "Directory does not exist: $PROJECT_DIR"
+    exit 1
+fi
+cd "$PROJECT_DIR"
+log_ok "Project dir: $(pwd)"
+
+# Git repo
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    log_error "Not a git repository. Run 'git init' first or cd into a git repo."
+    exit 1
+fi
+log_ok "Git repo detected"
+
+# Working tree clean (warn only)
+if ! git diff --quiet || ! git diff --cached --quiet; then
+    log_warn "Working tree has uncommitted changes. Recommended: commit or stash first."
+    if ! confirm "Continue anyway?"; then
+        log_info "Aborting. Run 'git stash' or commit, then re-run."
+        exit 0
+    fi
+fi
+
+# Required commands
+require_cmd php "Install PHP ${MIN_PHP_VERSION}+ (https://www.php.net/downloads)" || exit 1
+require_cmd composer "Install Composer 2.x (https://getcomposer.org/download)" || exit 1
+require_cmd node "Install Node.js ${MIN_NODE_VERSION}+ LTS (https://nodejs.org)" || exit 1
+require_cmd npm "Comes with Node.js" || exit 1
+require_cmd jq "Required for JSON merging. brew install jq | apt install jq" || exit 1
+
+# Version checks
+PHP_VERSION=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')
+if [[ $(printf '%s\n%s' "$MIN_PHP_VERSION" "$PHP_VERSION" | sort -V | head -1) != "$MIN_PHP_VERSION" ]]; then
+    log_error "PHP ${PHP_VERSION} detected; need ${MIN_PHP_VERSION}+. Upgrade PHP first."
+    exit 1
+fi
+log_ok "PHP ${PHP_VERSION} (>= ${MIN_PHP_VERSION} required)"
+
+NODE_VERSION=$(node -v | sed 's/^v//' | cut -d. -f1)
+if [[ "$NODE_VERSION" -lt "$MIN_NODE_VERSION" ]]; then
+    log_error "Node ${NODE_VERSION} detected; need ${MIN_NODE_VERSION}+. Upgrade Node first."
+    exit 1
+fi
+log_ok "Node $(node -v) (>= v${MIN_NODE_VERSION} required)"
+
+# Gitleaks (optional)
+if command -v gitleaks >/dev/null 2>&1; then
+    log_ok "gitleaks $(gitleaks version 2>&1 | head -1)"
+else
+    log_warn "gitleaks not installed — pre-commit secret scan will be skipped (non-fatal)"
+    log_info "Install: brew install gitleaks (macOS) | https://github.com/gitleaks/gitleaks/releases"
+fi
+
+# ----- composer.json -------------------------------------------------------
+
+log_section "Configuring composer.json"
+
+if [[ -f composer.json ]]; then
+    if [[ $DRY_RUN -eq 0 ]]; then
+        backup_if_exists composer.json
+        jq --arg url "$STANDARDS_REPO_URL" --arg constraint "$COMPOSER_CONSTRAINT" '
+            .repositories = (.repositories // [])
+                | if (.repositories | map(select(.url == $url)) | length) == 0
+                  then .repositories += [{"type": "vcs", "url": $url}]
+                  else . end
+            | .["require-dev"]["dialed-in-design/coding-standards"] = $constraint
+            | .config["allow-plugins"]["dealerdirect/phpcodesniffer-composer-installer"] = true
+            | .config["allow-plugins"]["humanmade/psalm-plugin-wordpress"] = true
+            | .scripts.lint = "phpcs"
+            | .scripts["lint:fix"] = "phpcbf"
+            | .scripts.analyze = "phpstan analyse --memory-limit=1G"
+            | .scripts.taint = "psalm --threads=4"
+            | .scripts.check = ["@lint", "@analyze", "@taint"]
+        ' composer.json > composer.json.tmp && mv composer.json.tmp composer.json
+    fi
+    log_ok "Merged dependencies into composer.json"
+else
+    if [[ $DRY_RUN -eq 0 ]]; then
+        cat > composer.json <<EOF
+{
+    "name": "dialedin/wordpress-project",
+    "type": "project",
+    "require": {
+        "php": ">=${MIN_PHP_VERSION}"
+    },
+    "require-dev": {
+        "dialed-in-design/coding-standards": "${COMPOSER_CONSTRAINT}"
+    },
+    "repositories": [
+        { "type": "vcs", "url": "${STANDARDS_REPO_URL}" }
+    ],
+    "config": {
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true,
+            "humanmade/psalm-plugin-wordpress": true
+        }
+    },
+    "scripts": {
+        "lint": "phpcs",
+        "lint:fix": "phpcbf",
+        "analyze": "phpstan analyse --memory-limit=1G",
+        "taint": "psalm --threads=4",
+        "check": ["@lint", "@analyze", "@taint"]
+    }
+}
+EOF
+    fi
+    log_ok "Created composer.json"
+fi
+
+# ----- package.json --------------------------------------------------------
+
+log_section "Configuring package.json"
+
+NPM_PKG_REF="github:Dialed-In-Design/dialedin-coding-standards#${SCRIPT_TARGET_TAG}"
+
+if [[ -f package.json ]]; then
+    if [[ $DRY_RUN -eq 0 ]]; then
+        backup_if_exists package.json
+        jq --arg pkgref "$NPM_PKG_REF" '
+            .devDependencies = (.devDependencies // {})
+            | .devDependencies["@dialed-in-design/coding-standards"] = $pkgref
+            | .devDependencies.eslint = (.devDependencies.eslint // "^8.57.0")
+            | .devDependencies.stylelint = (.devDependencies.stylelint // "^16.9.0")
+            | .devDependencies.lefthook = (.devDependencies.lefthook // "^1.7.0")
+            | .scripts = (.scripts // {})
+            | .scripts.prepare = "lefthook install || true"
+            | .scripts["lint:js"] = (.scripts["lint:js"] // "eslint .")
+            | .scripts["lint:js:fix"] = (.scripts["lint:js:fix"] // "eslint . --fix")
+            | .scripts["lint:css"] = (.scripts["lint:css"] // "stylelint \"**/*.{css,scss}\" --ignore-path .gitignore")
+            | .scripts["lint:css:fix"] = (.scripts["lint:css:fix"] // "stylelint \"**/*.{css,scss}\" --ignore-path .gitignore --fix")
+        ' package.json > package.json.tmp && mv package.json.tmp package.json
+    fi
+    log_ok "Merged dependencies into package.json"
+else
+    if [[ $DRY_RUN -eq 0 ]]; then
+        cat > package.json <<EOF
+{
+    "name": "dialedin-wordpress-project",
+    "version": "1.0.0",
+    "private": true,
+    "devDependencies": {
+        "@dialed-in-design/coding-standards": "${NPM_PKG_REF}",
+        "eslint": "^8.57.0",
+        "stylelint": "^16.9.0",
+        "lefthook": "^1.7.0"
+    },
+    "scripts": {
+        "prepare": "lefthook install || true",
+        "lint:js": "eslint .",
+        "lint:js:fix": "eslint . --fix",
+        "lint:css": "stylelint \"**/*.{css,scss}\" --ignore-path .gitignore",
+        "lint:css:fix": "stylelint \"**/*.{css,scss}\" --ignore-path .gitignore --fix"
+    }
+}
+EOF
+    fi
+    log_ok "Created package.json"
+fi
+
+# ----- phpcs.xml.dist ------------------------------------------------------
+
+log_section "phpcs.xml.dist"
+
+if [[ -f phpcs.xml.dist ]] || [[ -f phpcs.xml ]] || [[ -f .phpcs.xml ]] || [[ -f .phpcs.xml.dist ]]; then
+    log_warn "Existing PHPCS config found. Skipping creation."
+    log_info "Add this rule to your existing config: <rule ref=\"DialedIn\"/>"
+else
+    if [[ $DRY_RUN -eq 0 ]]; then
+        cat > phpcs.xml.dist <<'EOF'
+<?xml version="1.0"?>
+<ruleset name="Project">
+    <description>Project PHPCS ruleset — extends DialedIn standard.</description>
+
+    <file>.</file>
+    <exclude-pattern>*/vendor/*</exclude-pattern>
+    <exclude-pattern>*/node_modules/*</exclude-pattern>
+    <exclude-pattern>*/wp-admin/*</exclude-pattern>
+    <exclude-pattern>*/wp-includes/*</exclude-pattern>
+    <exclude-pattern>*/wp-content/uploads/*</exclude-pattern>
+    <exclude-pattern>*/wp-content/plugins/*</exclude-pattern>
+    <exclude-pattern>*/wp-content/themes/twenty*/*</exclude-pattern>
+    <exclude-pattern>*/build/*</exclude-pattern>
+    <exclude-pattern>*/dist/*</exclude-pattern>
+    <exclude-pattern>*.min.js</exclude-pattern>
+    <exclude-pattern>*.min.css</exclude-pattern>
+
+    <arg name="colors"/>
+    <arg value="ps"/>
+    <arg name="parallel" value="8"/>
+    <arg name="extensions" value="php"/>
+
+    <rule ref="DialedIn"/>
+</ruleset>
+EOF
+    fi
+    log_ok "Wrote phpcs.xml.dist"
+fi
+
+# ----- phpstan.neon --------------------------------------------------------
+
+log_section "phpstan.neon"
+
+if [[ -f phpstan.neon ]] || [[ -f phpstan.neon.dist ]]; then
+    log_warn "Existing PHPStan config found. Skipping creation."
+    log_info "Add this include: 'vendor/dialed-in-design/coding-standards/phpstan.neon.dist'"
+else
+    if [[ $DRY_RUN -eq 0 ]]; then
+        cat > phpstan.neon <<'EOF'
+includes:
+    - vendor/dialed-in-design/coding-standards/phpstan.neon.dist
+
+parameters:
+    # ADJUST: point at your custom code only.
+    paths:
+        - wp-content/themes
+        - wp-content/mu-plugins
+    # Uncomment after:  vendor/bin/phpstan analyse --generate-baseline
+    # baseline: phpstan-baseline.neon
+EOF
+    fi
+    log_ok "Wrote phpstan.neon"
+    log_warn "Edit phpstan.neon → 'paths:' to scope to YOUR custom code only."
+fi
+
+# ----- .eslintrc.json ------------------------------------------------------
+
+log_section ".eslintrc.json"
+
+if [[ -f .eslintrc.json ]] || [[ -f .eslintrc.js ]] || [[ -f .eslintrc.yml ]] || [[ -f eslint.config.js ]]; then
+    log_warn "Existing ESLint config found. Skipping creation."
+    log_info "Extend: './node_modules/@dialed-in-design/coding-standards/.eslintrc.json'"
+else
+    if [[ $DRY_RUN -eq 0 ]]; then
+        cat > .eslintrc.json <<'EOF'
+{
+    "extends": ["./node_modules/@dialed-in-design/coding-standards/.eslintrc.json"]
+}
+EOF
+    fi
+    log_ok "Wrote .eslintrc.json"
+fi
+
+# ----- stylelint.config.js -------------------------------------------------
+
+log_section "stylelint.config.js"
+
+if [[ -f stylelint.config.js ]] || [[ -f .stylelintrc ]] || [[ -f .stylelintrc.json ]] || [[ -f .stylelintrc.js ]]; then
+    log_warn "Existing Stylelint config found. Skipping creation."
+    log_info "Extend: '@dialed-in-design/coding-standards/stylelint.config.js'"
+else
+    if [[ $DRY_RUN -eq 0 ]]; then
+        cat > stylelint.config.js <<'EOF'
+module.exports = {
+    extends: ['@dialed-in-design/coding-standards/stylelint.config.js'],
+};
+EOF
+    fi
+    log_ok "Wrote stylelint.config.js"
+fi
+
+# ----- lefthook.yml --------------------------------------------------------
+
+log_section "lefthook.yml"
+
+if [[ -f lefthook.yml ]] || [[ -f lefthook.yaml ]]; then
+    [[ $DRY_RUN -eq 0 ]] && backup_if_exists lefthook.yml
+fi
+
+if [[ $DRY_RUN -eq 0 ]]; then
+    cat > lefthook.yml <<EOF
+remotes:
+  - git_url: ${STANDARDS_REPO_URL}
+    ref: ${SCRIPT_TARGET_TAG}
+    configs:
+      - lefthook.yml
+EOF
+fi
+log_ok "Wrote lefthook.yml"
+
+# ----- Install -------------------------------------------------------------
+
+log_section "Installing dependencies"
+
+if [[ $DRY_RUN -eq 1 ]]; then
+    log_info "[dry-run] Would run: composer install && npm install && npx lefthook install"
+else
+    log_info "Running composer install..."
+    composer install --no-interaction
+    log_ok "Composer dependencies installed"
+
+    log_info "Running npm install..."
+    npm install --no-audit --no-fund
+    log_ok "npm dependencies installed"
+
+    log_info "Installing git hooks..."
+    npx lefthook install
+    log_ok "Git hooks installed"
+
+    # Auto-copy psalm.xml.dist from vendor
+    if [[ ! -f psalm.xml.dist ]] && [[ -f vendor/dialed-in-design/coding-standards/psalm.xml.dist ]]; then
+        cp vendor/dialed-in-design/coding-standards/psalm.xml.dist psalm.xml.dist
+        log_ok "Copied psalm.xml.dist from standards repo"
+        log_warn "Edit psalm.xml.dist → <projectFiles> and <ignoreFiles> for this project."
+    fi
+fi
+
+# ----- Verification --------------------------------------------------------
+
+log_section "Verifying installation"
+
+if [[ $DRY_RUN -eq 1 ]]; then
+    log_info "[dry-run] Skipping verification."
+else
+    VERIFY_FAIL=0
+
+    if vendor/bin/phpcs -i 2>/dev/null | grep -q "DialedIn"; then
+        log_ok "PHPCS: DialedIn standard registered"
+    else
+        log_error "PHPCS: DialedIn standard NOT registered"
+        VERIFY_FAIL=1
+    fi
+
+    if vendor/bin/phpstan --version >/dev/null 2>&1; then
+        log_ok "PHPStan: $(vendor/bin/phpstan --version 2>&1 | head -1)"
+    else
+        log_error "PHPStan: not runnable"
+        VERIFY_FAIL=1
+    fi
+
+    if vendor/bin/psalm --version >/dev/null 2>&1; then
+        log_ok "Psalm: $(vendor/bin/psalm --version 2>&1 | head -1)"
+    else
+        log_error "Psalm: not runnable"
+        VERIFY_FAIL=1
+    fi
+
+    if [[ -f .git/hooks/pre-commit ]] && grep -q lefthook .git/hooks/pre-commit; then
+        log_ok "Lefthook: pre-commit hook installed"
+    else
+        log_error "Lefthook: pre-commit hook NOT installed"
+        VERIFY_FAIL=1
+    fi
+
+    if [[ $VERIFY_FAIL -eq 1 ]]; then
+        log_error "Verification failed. See ${STANDARDS_REPO_URL}/blob/${SCRIPT_TARGET_TAG}/docs/ONBOARDING.md#troubleshooting"
+        exit 1
+    fi
+fi
+
+# ----- Next steps ----------------------------------------------------------
+
+log_section "Done"
+
+cat <<EOF
+
+${C_GREEN}${C_BOLD}Scaffold complete.${C_RESET}
+
+Next steps:
+
+  1. ${C_BOLD}Adjust per-project paths:${C_RESET}
+     - phpstan.neon → 'paths:' to point at your custom code
+     - psalm.xml.dist → '<projectFiles>' and '<ignoreFiles>'
+
+  2. ${C_BOLD}Baseline existing violations${C_RESET} (legacy projects only):
+     vendor/bin/phpstan analyse --generate-baseline
+     vendor/bin/psalm --set-baseline=psalm-baseline.xml
+     # Then uncomment 'baseline:' in phpstan.neon
+
+  3. ${C_BOLD}Commit:${C_RESET}
+     git add composer.json composer.lock package.json package-lock.json \\
+             phpcs.xml.dist phpstan.neon psalm.xml.dist \\
+             .eslintrc.json stylelint.config.js lefthook.yml
+     git commit -m "chore: add Dialed In coding standards (${SCRIPT_TARGET_TAG})"
+
+  4. ${C_BOLD}Test the gates:${C_RESET}
+     ${STANDARDS_REPO_URL}/blob/${SCRIPT_TARGET_TAG}/docs/ONBOARDING.md#testing-the-gates
+
+Standards repo: ${STANDARDS_REPO_URL}
+Pinned tag:     ${SCRIPT_TARGET_TAG}
+EOF
