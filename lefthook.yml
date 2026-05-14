@@ -4,7 +4,7 @@
 #
 #   remotes:
 #     - git_url: https://github.com/Dialed-In-Design/dialedin-coding-standards
-#       ref: v0.3.3
+#       ref: v0.4.0
 #       configs:
 #         - lefthook.yml
 #
@@ -46,7 +46,7 @@ pre-push:
       run: vendor/bin/psalm --no-progress --threads=4
       fail_text: "Psalm reported errors. Fix or update baseline (vendor/bin/psalm --set-baseline=psalm-baseline.xml) before pushing."
 
-    # ----- Dependency security audits (added in v0.3.3) ------------------
+    # ----- Dependency security audits (added in v0.3.3, unchanged in v0.4.0) ------------------
     #
     # Both audits report advisories but DO NOT block the push. Rationale:
     # a CVE published 5 minutes ago shouldn't block every dev's push until

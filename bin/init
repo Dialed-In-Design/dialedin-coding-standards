@@ -30,9 +30,9 @@ set -euo pipefail
 # (Lefthook remote include, npm package, Composer constraint) are pinned
 # independently. Bump SCRIPT_TARGET_TAG when releasing a new standards version.
 
-readonly SCRIPT_VERSION="0.3.3"
+readonly SCRIPT_VERSION="0.4.0"
 readonly STANDARDS_REPO_URL="https://github.com/Dialed-In-Design/dialedin-coding-standards"
-readonly SCRIPT_TARGET_TAG="v0.3.3"
+readonly SCRIPT_TARGET_TAG="v0.4.0"
 readonly COMPOSER_CONSTRAINT="^0.3"
 readonly MIN_PHP_VERSION="8.2"
 readonly MIN_NODE_VERSION="20"
@@ -145,6 +145,200 @@ done
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 
+# ----- Custom code detection (added in v0.4.0) ------------------------------
+#
+# Scans the project for likely-custom themes, plugins, and mu-plugins, plus
+# build artifacts to exclude. Populates these arrays for use by the
+# phpstan.neon and psalm.xml.dist templates:
+#
+#   DETECTED_ACTIVE_THEMES     — non-default themes with recent activity
+#   DETECTED_LEGACY_THEMES     — non-default themes with no activity > 18 months
+#   DETECTED_CUSTOM_PLUGINS    — plugins with no wpackagist/composer entry
+#   DETECTED_MU_PLUGINS        — true/false flag (mu-plugins/ directory exists)
+#   DETECTED_BUILD_ARTIFACTS   — dist/build dirs within detected themes/plugins
+#
+# Detection runs after env validation but before any file writes so the
+# results can be used in the config templates further down.
+
+# Threshold: themes/plugins not touched in this many days are considered legacy.
+readonly LEGACY_THRESHOLD_DAYS=548  # 18 months
+
+DETECTED_ACTIVE_THEMES=()
+DETECTED_LEGACY_THEMES=()
+DETECTED_CUSTOM_PLUGINS=()
+DETECTED_MU_PLUGINS="false"
+DETECTED_BUILD_ARTIFACTS=()
+
+# Returns 0 if the given path was last touched in git within
+# LEGACY_THRESHOLD_DAYS, 1 otherwise. Falls back to mtime if git history
+# isn't available (e.g. shallow clone).
+is_recently_active() {
+    local path="$1"
+    local cutoff_epoch
+    cutoff_epoch=$(date -d "${LEGACY_THRESHOLD_DAYS} days ago" +%s 2>/dev/null) \
+        || cutoff_epoch=$(date -v-${LEGACY_THRESHOLD_DAYS}d +%s 2>/dev/null) \
+        || return 0  # if date math fails, assume active
+
+    # Most recent commit touching this path
+    local last_commit_epoch
+    last_commit_epoch=$(git log -1 --format=%ct -- "$path" 2>/dev/null || echo "")
+
+    if [[ -n "$last_commit_epoch" ]]; then
+        [[ "$last_commit_epoch" -ge "$cutoff_epoch" ]] && return 0 || return 1
+    fi
+
+    # No git history for this path — fall back to filesystem mtime
+    local mtime
+    mtime=$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo "0")
+    [[ "$mtime" -ge "$cutoff_epoch" ]] && return 0 || return 1
+}
+
+# Returns 0 if the given plugin directory appears to be vendor/third-party,
+# 1 if it appears to be custom. Heuristics:
+#  - listed as wpackagist-plugin in composer.json → vendor
+#  - readme.txt contains a known vendor's "Plugin Name" → vendor
+#  - directory name matches well-known plugin slug → vendor
+is_vendor_plugin() {
+    local plugin_dir="$1"
+    local plugin_slug
+    plugin_slug=$(basename "$plugin_dir")
+
+    # Well-known plugin slugs (top ~20 most common in WordPress projects)
+    local known_vendor_slugs=(
+        akismet wordpress-seo wp-rocket wp-super-cache w3-total-cache
+        contact-form-7 wpforms-lite gravityforms ninja-forms
+        woocommerce easy-digital-downloads
+        advanced-custom-fields advanced-custom-fields-pro
+        elementor elementor-pro beaver-builder
+        jetpack updraftplus wordfence sucuri-scanner
+        google-analytics-for-wordpress monsterinsights
+        wp-mail-smtp redirection rank-math-seo all-in-one-seo-pack
+        classic-editor classic-widgets
+        wp-graphql
+    )
+    for slug in "${known_vendor_slugs[@]}"; do
+        [[ "$plugin_slug" == "$slug" ]] && return 0
+    done
+
+    # Composer wpackagist entry
+    if [[ -f composer.json ]] && command -v jq >/dev/null 2>&1; then
+        if jq -e --arg slug "wpackagist-plugin/${plugin_slug}" \
+            '(.require // {}) | has($slug)' composer.json >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    # Default: appears custom
+    return 1
+}
+
+detect_custom_code() {
+    log_section "Detecting custom code"
+
+    # --- Themes ---
+    if [[ -d wp-content/themes ]]; then
+        for theme_dir in wp-content/themes/*/; do
+            [[ -d "$theme_dir" ]] || continue
+            local name
+            name=$(basename "$theme_dir")
+
+            # Skip WordPress default themes
+            [[ "$name" =~ ^twenty ]] && continue
+            [[ "$name" == "default" || "$name" == "classic" ]] && continue
+
+            # Strip trailing slash for cleaner config output
+            local clean_path="${theme_dir%/}"
+
+            if is_recently_active "$theme_dir"; then
+                DETECTED_ACTIVE_THEMES+=("$clean_path")
+                log_ok "Active theme:     $clean_path"
+            else
+                DETECTED_LEGACY_THEMES+=("$clean_path")
+                log_warn "Legacy theme:     $clean_path (no activity > ${LEGACY_THRESHOLD_DAYS} days)"
+            fi
+
+            # Build artifacts within this theme
+            for artifact in dist build .cache; do
+                [[ -d "${theme_dir}${artifact}" ]] && DETECTED_BUILD_ARTIFACTS+=("${clean_path}/${artifact}")
+            done
+            # Theme-local vendor (composer-managed themes)
+            [[ -d "${theme_dir}vendor" ]] && DETECTED_BUILD_ARTIFACTS+=("${clean_path}/vendor")
+        done
+    fi
+
+    # --- Plugins ---
+    if [[ -d wp-content/plugins ]]; then
+        for plugin_dir in wp-content/plugins/*/; do
+            [[ -d "$plugin_dir" ]] || continue
+            local name
+            name=$(basename "$plugin_dir")
+            local clean_path="${plugin_dir%/}"
+
+            if is_vendor_plugin "$plugin_dir"; then
+                continue  # don't log; vendor plugins are most plugins, would spam
+            fi
+
+            DETECTED_CUSTOM_PLUGINS+=("$clean_path")
+            log_ok "Custom plugin:    $clean_path"
+
+            for artifact in dist build .cache; do
+                [[ -d "${plugin_dir}${artifact}" ]] && DETECTED_BUILD_ARTIFACTS+=("${clean_path}/${artifact}")
+            done
+        done
+    fi
+
+    # --- MU-plugins ---
+    if [[ -d wp-content/mu-plugins ]]; then
+        DETECTED_MU_PLUGINS="true"
+        log_ok "MU-plugins:       wp-content/mu-plugins (assumed all custom)"
+    fi
+
+    # Summary
+    local total=$((${#DETECTED_ACTIVE_THEMES[@]} + ${#DETECTED_CUSTOM_PLUGINS[@]}))
+    [[ "$DETECTED_MU_PLUGINS" == "true" ]] && total=$((total + 1))
+
+    if [[ $total -eq 0 ]]; then
+        log_warn "No custom code detected. You will need to manually add paths after the script halts."
+    else
+        log_info "Detected $total candidate(s) for inclusion in static analysis paths."
+    fi
+
+    if [[ ${#DETECTED_LEGACY_THEMES[@]} -gt 0 ]]; then
+        log_info "Found ${#DETECTED_LEGACY_THEMES[@]} legacy theme(s); these will appear in config but commented out by default."
+    fi
+}
+
+# Emit a YAML-formatted list of paths for phpstan.neon. Each entry is
+# prefixed with the indent and "# " for commented-out form (since the dev
+# must opt in to each one).
+emit_phpstan_path_block() {
+    local indent="$1"
+    shift
+    local paths=("$@")
+    if [[ ${#paths[@]} -eq 0 ]]; then
+        echo "${indent}# (none detected in this category)"
+        return
+    fi
+    for p in "${paths[@]}"; do
+        echo "${indent}# - ${p}"
+    done
+}
+
+# Same but for psalm.xml.dist (XML format).
+emit_psalm_directory_block() {
+    local indent="$1"
+    local tag="$2"  # "directory" or "file"
+    shift 2
+    local paths=("$@")
+    if [[ ${#paths[@]} -eq 0 ]]; then
+        echo "${indent}<!-- (none detected in this category) -->"
+        return
+    fi
+    for p in "${paths[@]}"; do
+        echo "${indent}<!-- <${tag} name=\"${p}\" /> -->"
+    done
+}
+
 # ----- Main ----------------------------------------------------------------
 
 print_banner
@@ -206,6 +400,11 @@ else
     log_warn "gitleaks not installed — pre-commit secret scan will be skipped (non-fatal)"
     log_info "Install: brew install gitleaks (macOS) | https://github.com/gitleaks/gitleaks/releases"
 fi
+
+# ----- Custom code detection -----------------------------------------------
+# Runs before file writes so detected candidates can populate config templates.
+
+detect_custom_code
 
 # ----- composer.json -------------------------------------------------------
 
@@ -362,21 +561,60 @@ if [[ -f phpstan.neon ]] || [[ -f phpstan.neon.dist ]]; then
     log_info "Add this include: 'vendor/dialed-in-design/coding-standards/phpstan.neon.dist'"
 else
     if [[ $DRY_RUN -eq 0 ]]; then
-        cat > phpstan.neon <<'EOF'
+        # Build the phpstan.neon contents incrementally so we can splice in
+        # the detected candidates as commented YAML list items.
+        {
+            cat <<'EOF_HEADER'
 includes:
     - vendor/dialed-in-design/coding-standards/phpstan.neon.dist
 
 parameters:
-    # ADJUST: point at your custom code only.
+    # ⚠ EDIT REQUIRED before analysis can run.
+    #
+    # Uncomment the paths below that contain YOUR custom code.
+    # The init script detected these candidates by scanning the project.
+    # Do NOT scan vendor code, WordPress core, or default themes.
+    #
+    # If you re-run bin/init after editing, your edits are preserved
+    # (existing phpstan.neon is left untouched).
     paths:
-        - wp-content/themes
-        - wp-content/mu-plugins
-    # Uncomment after:  vendor/bin/phpstan analyse --generate-baseline
+        # === DETECTED ACTIVE CUSTOM THEMES (recommended) ===
+EOF_HEADER
+            emit_phpstan_path_block "        " "${DETECTED_ACTIVE_THEMES[@]}"
+            echo ""
+
+            echo "        # === DETECTED CUSTOM PLUGINS (recommended) ==="
+            emit_phpstan_path_block "        " "${DETECTED_CUSTOM_PLUGINS[@]}"
+            echo ""
+
+            echo "        # === DETECTED MU-PLUGINS (usually all custom) ==="
+            if [[ "$DETECTED_MU_PLUGINS" == "true" ]]; then
+                echo "        # - wp-content/mu-plugins"
+            else
+                echo "        # (none detected — no wp-content/mu-plugins/ directory)"
+            fi
+            echo ""
+
+            echo "        # === DETECTED LEGACY THEMES (NOT recommended) ==="
+            echo "        # Only uncomment if you're actively maintaining these. Most legacy"
+            echo "        # themes should be deleted or excluded — not analyzed."
+            emit_phpstan_path_block "        " "${DETECTED_LEGACY_THEMES[@]}"
+            echo ""
+
+            cat <<'EOF_FOOTER'
+    excludePaths:
+        # === DETECTED BUILD ARTIFACTS (recommended to exclude) ===
+EOF_FOOTER
+            emit_phpstan_path_block "        " "${DETECTED_BUILD_ARTIFACTS[@]}"
+            cat <<'EOF_END'
+
+    # Uncomment after: vendor/bin/phpstan analyse --generate-baseline
     # baseline: phpstan-baseline.neon
-EOF
+EOF_END
+        } > phpstan.neon
     fi
-    log_ok "Wrote phpstan.neon"
-    log_warn "Edit phpstan.neon → 'paths:' to scope to YOUR custom code only."
+    log_ok "Wrote phpstan.neon with detected candidates as comments"
+    log_warn "⚠ phpstan.neon requires manual editing before analysis can run."
 fi
 
 # ----- .eslintrc.json ------------------------------------------------------
@@ -453,13 +691,98 @@ else
     npx lefthook install
     log_ok "Git hooks installed"
 
-    # Auto-copy psalm.xml.dist from vendor
-    if [[ ! -f psalm.xml.dist ]] && [[ -f vendor/dialed-in-design/coding-standards/psalm.xml.dist ]]; then
-        cp vendor/dialed-in-design/coding-standards/psalm.xml.dist psalm.xml.dist
-        log_ok "Copied psalm.xml.dist from standards repo"
-        log_warn "Edit psalm.xml.dist → <projectFiles> and <ignoreFiles> for this project."
+    # Write psalm.xml.dist with detected candidates as commented suggestions.
+    # We can't copy from vendor/ anymore because the vendor template is
+    # generic and assumes paths that don't exist in real projects (see OGP
+    # Stories pilot). Generate from scratch using detection results.
+    if [[ ! -f psalm.xml.dist ]]; then
+        {
+            cat <<'EOF_PSALM_HEADER'
+<?xml version="1.0"?>
+<psalm
+    errorLevel="3"
+    findUnusedBaselineEntry="true"
+    findUnusedCode="false"
+    resolveFromConfigFile="true"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns="https://getpsalm.org/schema/config"
+    xsi:schemaLocation="https://getpsalm.org/schema/config vendor/vimeo/psalm/config.xsd"
+>
+    <!--
+        EDIT REQUIRED before analysis can run.
+
+        Uncomment the <directory> or <file> entries below that contain
+        YOUR custom code. The init script detected these candidates.
+
+        WARNING: Psalm refuses to start if any <ignoreFiles> directory
+        does not exist on disk. Comment out (don't delete) any entry
+        that doesn't apply.
+    -->
+    <projectFiles>
+        <!-- === DETECTED ACTIVE CUSTOM THEMES (recommended) === -->
+EOF_PSALM_HEADER
+            emit_psalm_directory_block "        " "directory" "${DETECTED_ACTIVE_THEMES[@]}"
+            echo ""
+            echo "        <!-- === DETECTED CUSTOM PLUGINS (recommended) === -->"
+            emit_psalm_directory_block "        " "directory" "${DETECTED_CUSTOM_PLUGINS[@]}"
+            echo ""
+            echo "        <!-- === DETECTED MU-PLUGINS (usually all custom) === -->"
+            if [[ "$DETECTED_MU_PLUGINS" == "true" ]]; then
+                echo '        <!-- <directory name="wp-content/mu-plugins" /> -->'
+            else
+                echo "        <!-- (none detected — no wp-content/mu-plugins/ directory) -->"
+            fi
+            echo ""
+            echo "        <!-- === DETECTED LEGACY THEMES (NOT recommended) === -->"
+            emit_psalm_directory_block "        " "directory" "${DETECTED_LEGACY_THEMES[@]}"
+            echo ""
+            cat <<'EOF_PSALM_IGNORE'
+        <ignoreFiles>
+            <!-- Always-safe ignores: -->
+            <directory name="vendor" />
+            <directory name="node_modules" />
+
+            <!-- === DETECTED BUILD ARTIFACTS (recommended to exclude) === -->
+EOF_PSALM_IGNORE
+            emit_psalm_directory_block "            " "directory" "${DETECTED_BUILD_ARTIFACTS[@]}"
+            cat <<'EOF_PSALM_FOOTER'
+        </ignoreFiles>
+    </projectFiles>
+
+    <plugins>
+        <!-- WordPress stubs and helpers — pulled in via vendor/ -->
+        <pluginClass class="PsalmWordPress\Plugin" />
+    </plugins>
+
+    <issueHandlers>
+        <!-- Tune severity levels per project as needed. -->
+    </issueHandlers>
+</psalm>
+EOF_PSALM_FOOTER
+        } > psalm.xml.dist
+        log_ok "Wrote psalm.xml.dist with detected candidates as comments"
+        log_warn "⚠ psalm.xml.dist requires manual editing before analysis can run."
     fi
 fi
+
+# ----- Path-edit gate (added in v0.4.0) ------------------------------------
+#
+# After config writing, halt the script if phpstan.neon has no uncommented
+# 'paths:' entries. The dev must edit the file before baselining (and before
+# any analysis tool will produce useful output). This prevents the silent-
+# failure mode where empty configs run successfully but scan nothing.
+
+check_paths_configured() {
+    [[ -f phpstan.neon ]] || return 1
+    # Look for at least one uncommented '- ' entry under paths:
+    awk '
+        /^[[:space:]]*paths:/ { in_paths=1; next }
+        in_paths && /^[[:space:]]*excludePaths:/ { in_paths=0 }
+        in_paths && /^[[:space:]]*[A-Za-z]/ && !/^[[:space:]]*#/ { in_paths=0 }
+        in_paths && /^[[:space:]]*-[[:space:]]/ && !/^[[:space:]]*#/ { found=1 }
+        END { exit !found }
+    ' phpstan.neon
+}
 
 # ----- Verification --------------------------------------------------------
 
@@ -526,12 +849,29 @@ fi
 log_section "Generating baselines"
 
 if [[ $DRY_RUN -eq 1 ]]; then
-    log_info "[dry-run] Would run: phpstan --generate-baseline && psalm --set-baseline"
+    log_info "[dry-run] Would check phpstan.neon paths, then generate baselines if configured."
 elif [[ ! -x vendor/bin/phpstan ]] || [[ ! -x vendor/bin/psalm ]]; then
     log_warn "Analyzers not found in vendor/bin. Skipping baseline generation."
     log_info "Run manually once installation is fixed:"
     log_info "    vendor/bin/phpstan analyse --generate-baseline"
     log_info "    vendor/bin/psalm --set-baseline=psalm-baseline.xml"
+elif ! check_paths_configured; then
+    # New in v0.4.0: refuse to generate baselines if phpstan.neon paths are
+    # still all commented out. This is the path-edit gate — preventing
+    # the silent-failure mode where an empty config produces an empty
+    # baseline that captures nothing.
+    log_warn "phpstan.neon has no uncommented paths. Skipping baseline generation."
+    log_info ""
+    log_info "Next steps to complete setup:"
+    log_info "  1. Open phpstan.neon and uncomment the paths that contain YOUR custom code."
+    log_info "  2. Open psalm.xml.dist and uncomment the matching <directory> entries."
+    log_info "  3. Run:"
+    log_info "       vendor/bin/phpstan analyse --generate-baseline"
+    log_info "       vendor/bin/psalm --set-baseline=psalm-baseline.xml"
+    log_info "       sed -i 's|^    # baseline: phpstan-baseline.neon|    baseline: phpstan-baseline.neon|' phpstan.neon"
+    log_info ""
+    log_info "Or re-run the init script after editing — it will detect configured"
+    log_info "paths and proceed to baseline generation automatically."
 else
     # PHPStan baseline
     if [[ -f phpstan-baseline.neon ]]; then
