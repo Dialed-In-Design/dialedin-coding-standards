@@ -30,9 +30,9 @@ set -euo pipefail
 # (Lefthook remote include, npm package, Composer constraint) are pinned
 # independently. Bump SCRIPT_TARGET_TAG when releasing a new standards version.
 
-readonly SCRIPT_VERSION="0.3.1"
+readonly SCRIPT_VERSION="0.3.2"
 readonly STANDARDS_REPO_URL="https://github.com/Dialed-In-Design/dialedin-coding-standards"
-readonly SCRIPT_TARGET_TAG="v0.3.1"
+readonly SCRIPT_TARGET_TAG="v0.3.2"
 readonly COMPOSER_CONSTRAINT="^0.3"
 readonly MIN_PHP_VERSION="8.2"
 readonly MIN_NODE_VERSION="20"
@@ -504,6 +504,83 @@ else
     fi
 fi
 
+# ----- Baseline generation -------------------------------------------------
+#
+# We always generate baselines. Rationale:
+#
+# - On a legacy codebase, this prevents the first 'git push' from being
+#   rejected by thousands of pre-existing violations the developer didn't
+#   introduce. Without this, devs would --no-verify every push and the
+#   hook becomes a no-op.
+#
+# - On a greenfield project, the baseline is empty or near-empty, which is
+#   functionally invisible. No harm done.
+#
+# - Baselines are intended to shrink over time. The team should regenerate
+#   periodically (vendor/bin/phpstan analyse --generate-baseline) to surface
+#   progress as code is improved.
+#
+# Skipped if the analyzers aren't installed (e.g. dry-run, or installation
+# failed earlier).
+
+log_section "Generating baselines"
+
+if [[ $DRY_RUN -eq 1 ]]; then
+    log_info "[dry-run] Would run: phpstan --generate-baseline && psalm --set-baseline"
+elif [[ ! -x vendor/bin/phpstan ]] || [[ ! -x vendor/bin/psalm ]]; then
+    log_warn "Analyzers not found in vendor/bin. Skipping baseline generation."
+    log_info "Run manually once installation is fixed:"
+    log_info "    vendor/bin/phpstan analyse --generate-baseline"
+    log_info "    vendor/bin/psalm --set-baseline=psalm-baseline.xml"
+else
+    # PHPStan baseline
+    if [[ -f phpstan-baseline.neon ]]; then
+        log_info "phpstan-baseline.neon already exists; skipping regeneration."
+        log_info "To refresh: rm phpstan-baseline.neon && vendor/bin/phpstan analyse --generate-baseline"
+    else
+        log_info "Generating PHPStan baseline (this can take 1-5 minutes on large codebases)..."
+        # PHPStan exits non-zero when it finds errors during baseline generation.
+        # That's the normal case — we capture those errors INTO the baseline.
+        # Suppress the exit code so the script continues.
+        if vendor/bin/phpstan analyse --generate-baseline --no-progress --memory-limit=1G 2>&1 | tail -5; then
+            true
+        fi
+        if [[ -f phpstan-baseline.neon ]]; then
+            BASELINE_COUNT=$(grep -c "^\s*-\s*message:" phpstan-baseline.neon 2>/dev/null || echo "0")
+            log_ok "PHPStan baseline written: ${BASELINE_COUNT} pre-existing violations captured"
+
+            # Uncomment the baseline: line in phpstan.neon so it's actually used.
+            # Idempotent: only edits if the commented line exists.
+            if [[ -f phpstan.neon ]] && grep -q "^    # baseline: phpstan-baseline.neon" phpstan.neon; then
+                sed -i.tmp 's|^    # baseline: phpstan-baseline.neon|    baseline: phpstan-baseline.neon|' phpstan.neon
+                rm -f phpstan.neon.tmp
+                log_ok "Enabled 'baseline:' line in phpstan.neon"
+            fi
+        else
+            log_warn "PHPStan baseline file was not created. Check paths in phpstan.neon."
+        fi
+    fi
+
+    # Psalm baseline
+    if [[ -f psalm-baseline.xml ]]; then
+        log_info "psalm-baseline.xml already exists; skipping regeneration."
+        log_info "To refresh: rm psalm-baseline.xml && vendor/bin/psalm --set-baseline=psalm-baseline.xml"
+    else
+        log_info "Generating Psalm baseline (this can take 1-5 minutes on large codebases)..."
+        # Psalm also exits non-zero when issues are found during --set-baseline.
+        # That's expected — same handling as PHPStan above.
+        if vendor/bin/psalm --set-baseline=psalm-baseline.xml --no-progress --threads=4 2>&1 | tail -5; then
+            true
+        fi
+        if [[ -f psalm-baseline.xml ]]; then
+            PSALM_COUNT=$(grep -c "<occurrence_count>" psalm-baseline.xml 2>/dev/null || echo "0")
+            log_ok "Psalm baseline written: ${PSALM_COUNT} files with pre-existing violations captured"
+        else
+            log_warn "Psalm baseline file was not created. Check <projectFiles> in psalm.xml.dist."
+        fi
+    fi
+fi
+
 # ----- Next steps ----------------------------------------------------------
 
 log_section "Done"
@@ -514,22 +591,23 @@ ${C_GREEN}${C_BOLD}Scaffold complete.${C_RESET}
 
 Next steps:
 
-  1. ${C_BOLD}Adjust per-project paths:${C_RESET}
+  1. ${C_BOLD}Adjust per-project paths${C_RESET} (if needed):
      - phpstan.neon → 'paths:' to point at your custom code
      - psalm.xml.dist → '<projectFiles>' and '<ignoreFiles>'
 
-  2. ${C_BOLD}Baseline existing violations${C_RESET} (legacy projects only):
-     vendor/bin/phpstan analyse --generate-baseline
-     vendor/bin/psalm --set-baseline=psalm-baseline.xml
-     # Then uncomment 'baseline:' in phpstan.neon
+     If you adjust paths, regenerate baselines:
+       rm phpstan-baseline.neon psalm-baseline.xml
+       vendor/bin/phpstan analyse --generate-baseline
+       vendor/bin/psalm --set-baseline=psalm-baseline.xml
 
-  3. ${C_BOLD}Commit:${C_RESET}
+  2. ${C_BOLD}Commit:${C_RESET}
      git add composer.json composer.lock package.json package-lock.json \\
              phpcs.xml.dist phpstan.neon psalm.xml.dist \\
-             .eslintrc.json stylelint.config.js lefthook.yml
+             .eslintrc.json stylelint.config.js lefthook.yml \\
+             phpstan-baseline.neon psalm-baseline.xml
      git commit -m "chore: add Dialed In coding standards (${SCRIPT_TARGET_TAG})"
 
-  4. ${C_BOLD}Test the gates:${C_RESET}
+  3. ${C_BOLD}Test the gates:${C_RESET}
      ${STANDARDS_REPO_URL}/blob/${SCRIPT_TARGET_TAG}/docs/ONBOARDING.md#testing-the-gates
 
 Standards repo: ${STANDARDS_REPO_URL}
