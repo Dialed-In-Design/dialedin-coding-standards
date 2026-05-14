@@ -4,17 +4,19 @@
 #
 #   remotes:
 #     - git_url: https://github.com/Dialed-In-Design/dialedin-coding-standards
-#       ref: v0.2.0
+#       ref: v0.3.3
 #       configs:
 #         - lefthook.yml
 #
 # Then run: lefthook install
 #
 # Pre-commit runs file-scoped fast lints on staged changes.
-# Pre-push runs whole-project static analysis (slower but blocks
-# unreviewed pushes). Bypass with --no-verify only when unavoidable;
-# CI runs the same gates as a safety net.
-
+# Pre-push runs whole-project static analysis and dependency audits.
+# Bypass with --no-verify only when unavoidable; CI runs the same gates
+# as a safety net.
+#
+# To skip just the dependency audits (e.g. when triaging a known advisory):
+#   LEFTHOOK_EXCLUDE=audit git push
 pre-commit:
   parallel: true
   commands:
@@ -39,6 +41,47 @@ pre-push:
     phpstan:
       run: vendor/bin/phpstan analyse --memory-limit=1G --no-progress
       fail_text: "PHPStan reported errors. Fix or generate a baseline (vendor/bin/phpstan analyse --generate-baseline) before pushing."
+
     psalm:
       run: vendor/bin/psalm --no-progress --threads=4
       fail_text: "Psalm reported errors. Fix or update baseline (vendor/bin/psalm --set-baseline=psalm-baseline.xml) before pushing."
+
+    # ----- Dependency security audits (added in v0.3.3) ------------------
+    #
+    # Both audits report advisories but DO NOT block the push. Rationale:
+    # a CVE published 5 minutes ago shouldn't block every dev's push until
+    # the team triages it. Hard-blocking pushes devs to --no-verify, which
+    # silently defeats the entire pre-push gate.
+    #
+    # Findings are visible to the developer pushing — encouraging triage
+    # without forcing emergency response. CI should additionally run these
+    # checks with stricter gates (block merge to main) as a safety net.
+
+    composer-audit:
+      tags:
+        - audit
+        - security
+      skip:
+        - run: test ! -f composer.lock
+      # `|| true` swallows audit's non-zero exit when advisories are found.
+      # Output is printed regardless, so the dev sees the findings.
+      run: |
+        echo ""
+        echo "→ Running composer audit (PHP dependencies)…"
+        composer audit --no-dev --format=plain --no-interaction 2>&1 || true
+        echo ""
+
+    npm-audit:
+      tags:
+        - audit
+        - security
+      skip:
+        - run: test ! -f package-lock.json
+      # --audit-level=high filters out low/moderate transitive noise.
+      # On a typical WP project with 600+ npm packages, defaults would
+      # surface ~50-100 mostly-irrelevant advisories per push.
+      run: |
+        echo ""
+        echo "→ Running npm audit (JS dependencies, high severity only)…"
+        npm audit --audit-level=high 2>&1 || true
+        echo ""
