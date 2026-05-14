@@ -30,9 +30,9 @@ set -euo pipefail
 # (Lefthook remote include, npm package, Composer constraint) are pinned
 # independently. Bump SCRIPT_TARGET_TAG when releasing a new standards version.
 
-readonly SCRIPT_VERSION="0.3.0"
+readonly SCRIPT_VERSION="0.3.1"
 readonly STANDARDS_REPO_URL="https://github.com/Dialed-In-Design/dialedin-coding-standards"
-readonly SCRIPT_TARGET_TAG="v0.3.0"
+readonly SCRIPT_TARGET_TAG="v0.3.1"
 readonly COMPOSER_CONSTRAINT="^0.3"
 readonly MIN_PHP_VERSION="8.2"
 readonly MIN_NODE_VERSION="20"
