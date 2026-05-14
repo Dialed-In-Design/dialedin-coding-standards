@@ -4,83 +4,101 @@
 #
 #   remotes:
 #     - git_url: https://github.com/Dialed-In-Design/dialedin-coding-standards
-#       ref: v0.4.0
+#       ref: v0.5.0
 #       configs:
 #         - lefthook.yml
 #
 # Then run: lefthook install
 #
-# Pre-commit runs file-scoped fast lints on staged changes.
-# Pre-push runs whole-project static analysis and dependency audits.
-# Bypass with --no-verify only when unavoidable; CI runs the same gates
-# as a safety net.
+# Per-project check enable/disable (added in v0.5.0):
 #
-# To skip just the dependency audits (e.g. when triaging a known advisory):
-#   LEFTHOOK_EXCLUDE=audit git push
+# Each command checks for ./dialedin.toml. If the file exists and contains
+# a line like `<command_name> = false`, the command is skipped for that
+# project. Defaults to enabled when the file or key is missing — i.e. zero
+# config required for projects that want all checks active.
+#
+# To disable a check for a project:
+#   1. Create ./dialedin.toml in the project root
+#   2. Add the relevant line under [checks], e.g.:  psalm = false
+#   3. Commit the file — applies to every developer on the project
+#
+# See: docs/CONFIG.md for the full schema.
+#
+# Bypass-once (for emergencies):
+#   git push --no-verify
+#   LEFTHOOK_EXCLUDE=audit git push     # skip just the audits
+
+# ----- Shared skip helper --------------------------------------------------
+# Every command uses the same grep pattern against dialedin.toml.
+# Reused via anchors for readability.
+
 pre-commit:
   parallel: true
   commands:
     phpcs:
+      skip:
+        - run: '[ -f dialedin.toml ] && grep -E "^phpcs[[:space:]]*=[[:space:]]*false" dialedin.toml >/dev/null'
       glob: "*.php"
       run: vendor/bin/phpcs {staged_files}
       stage_fixed: true
+
     eslint:
+      skip:
+        - run: '[ -f dialedin.toml ] && grep -E "^eslint[[:space:]]*=[[:space:]]*false" dialedin.toml >/dev/null'
       glob: "*.{js,jsx,ts,tsx}"
       run: npx eslint {staged_files}
       stage_fixed: true
+
     stylelint:
+      skip:
+        - run: '[ -f dialedin.toml ] && grep -E "^stylelint[[:space:]]*=[[:space:]]*false" dialedin.toml >/dev/null'
       glob: "*.{css,scss}"
       run: npx stylelint {staged_files}
       stage_fixed: true
+
     gitleaks:
+      skip:
+        - run: '[ -f dialedin.toml ] && grep -E "^gitleaks[[:space:]]*=[[:space:]]*false" dialedin.toml >/dev/null'
       run: gitleaks protect --staged --redact --no-banner
 
 pre-push:
   parallel: false
   commands:
     phpstan:
+      skip:
+        - run: '[ -f dialedin.toml ] && grep -E "^phpstan[[:space:]]*=[[:space:]]*false" dialedin.toml >/dev/null'
       run: vendor/bin/phpstan analyse --memory-limit=1G --no-progress
       fail_text: "PHPStan reported errors. Fix or generate a baseline (vendor/bin/phpstan analyse --generate-baseline) before pushing."
 
     psalm:
+      skip:
+        - run: '[ -f dialedin.toml ] && grep -E "^psalm[[:space:]]*=[[:space:]]*false" dialedin.toml >/dev/null'
       run: vendor/bin/psalm --no-progress --threads=4
       fail_text: "Psalm reported errors. Fix or update baseline (vendor/bin/psalm --set-baseline=psalm-baseline.xml) before pushing."
 
-    # ----- Dependency security audits (added in v0.3.3, unchanged in v0.4.0) ------------------
-    #
-    # Both audits report advisories but DO NOT block the push. Rationale:
-    # a CVE published 5 minutes ago shouldn't block every dev's push until
-    # the team triages it. Hard-blocking pushes devs to --no-verify, which
-    # silently defeats the entire pre-push gate.
-    #
-    # Findings are visible to the developer pushing — encouraging triage
-    # without forcing emergency response. CI should additionally run these
-    # checks with stricter gates (block merge to main) as a safety net.
+    # ----- Dependency security audits (added in v0.3.3) ------------------
 
     composer-audit:
+      skip:
+        - run: '[ -f dialedin.toml ] && grep -E "^composer_audit[[:space:]]*=[[:space:]]*false" dialedin.toml >/dev/null'
       tags:
         - audit
         - security
-      skip:
-        - run: test ! -f composer.lock
-      # `|| true` swallows audit's non-zero exit when advisories are found.
-      # Output is printed regardless, so the dev sees the findings.
       run: |
+        if [ ! -f composer.lock ]; then exit 0; fi
         echo ""
         echo "→ Running composer audit (PHP dependencies)…"
         composer audit --no-dev --format=plain --no-interaction 2>&1 || true
         echo ""
 
     npm-audit:
+      skip:
+        - run: '[ -f dialedin.toml ] && grep -E "^npm_audit[[:space:]]*=[[:space:]]*false" dialedin.toml >/dev/null'
       tags:
         - audit
         - security
-      skip:
-        - run: test ! -f package-lock.json
-      # --audit-level=high filters out low/moderate transitive noise.
-      # On a typical WP project with 600+ npm packages, defaults would
-      # surface ~50-100 mostly-irrelevant advisories per push.
       run: |
+        if [ ! -f package-lock.json ]; then exit 0; fi
         echo ""
         echo "→ Running npm audit (JS dependencies, high severity only)…"
         npm audit --audit-level=high 2>&1 || true
